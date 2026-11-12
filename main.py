@@ -238,7 +238,7 @@ init_rolling_database()
 
 
 @app.get("/api/history")
-def get_history(period: str = Query("1w", enum=)):
+def get_history(period: str = Query("1w")):
     period_map = {"1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365}
     sliced = DB_HISTORY[-period_map.get(period, 7) :]
     latest = sliced[-1]
