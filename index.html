@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>T-EWD: 대만해협 통합 조기경보 대시보드</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        .panel { background-color: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; padding: 1.15rem; position: relative; }
+        .blink-red { animation: blink 1s linear infinite; }
+        @keyframes blink { 50% { opacity: 0.35; } }
+        .today-badge { position: absolute; top: -10px; right: 12px; font-size: 0.65rem; font-weight: bold; padding: 2px 8px; border-radius: 9999px; background-color: #334155; color: #cbd5e1; border: 1px solid #475569; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+        .leaflet-popup-content-wrapper, .leaflet-popup-tip { background-color: #0f172a !important; color: #f8fafc !important; border: 1px solid #475569; }
+        .leaflet-container { background-color: #111827 !important; border-radius: 0.5rem; }
+        .tactical-marker { display: flex; align-items: center; justify-content: center; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.85)); transition: transform 0.2s; }
+        .tactical-marker:hover { transform: scale(1.25); z-index: 999 !important; }
+        .critical-pulse { animation: markerPulse 1.2s infinite ease-in-out; }
+        @keyframes markerPulse {
+            0%, 100% { filter: drop-shadow(0 0 3px #ef4444) drop-shadow(0 0 8px #ef4444); transform: scale(1); }
+            50% { filter: drop-shadow(0 0 10px #ef4444) drop-shadow(0 0 18px #f87171); transform: scale(1.18); }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-6 max-w-[1440px] mx-auto flex flex-col gap-5 min-h-screen relative">
+
+    <!-- 상단 헤더 -->
+    <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+            <h1 class="text-2xl md:text-3xl font-bold tracking-tight text-slate-100 flex items-center gap-3">
+                대만해협 통합 조기경보 시스템 (T-EWD)
+                <span class="bg-slate-800 border border-slate-600 text-emerald-400 text-xs px-2.5 py-1 rounded">4대 도메인 12지표 가동 중</span>
+            </h1>
+            <p class="text-slate-400 mt-1 text-xs md:text-sm">
+                최종 업데이트: <span id="last-update" class="text-white font-bold">-</span>
+                <span class="text-slate-500 ml-2">| 기상 결항 노이즈 필터링 적용 · 365일 롤링 윈도우</span>
+            </p>
+        </div>
+        <button onclick="document.getElementById('infoModal').classList.remove('hidden')" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-lg text-xs md:text-sm font-bold shadow transition flex items-center gap-2 border border-slate-600">
+            <i class="fas fa-book-open text-slate-300"></i> 12대 지표 명세 및 점수 산정 기준
+        </button>
+    </header>
+
+    <!-- 상단 KPI 요약 패널 (AI 종합 판정 + 4대 도메인별 3가지 지표 명시) -->
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <!-- AI 종합 판정 -->
+        <div class="panel flex flex-col justify-between items-center text-center border-l-4" id="kpi-border">
+            <div class="w-full">
+                <h2 class="text-slate-300 text-xs font-bold uppercase tracking-wider"><i class="fas fa-robot text-slate-400 mr-1"></i> AI 종합 위협 판정</h2>
+                <div id="status-badge" class="mt-2 text-2xl font-extrabold text-slate-400">분석 중...</div>
+            </div>
+            <div class="w-full my-3">
+                <div class="w-full bg-slate-800 rounded-full h-2.5 relative border border-slate-700 overflow-hidden">
+                    <div id="ai-score-bar" class="bg-emerald-500 h-2.5 transition-all duration-700" style="width: 0%"></div>
+                </div>
+                <div class="text-xs w-full flex justify-between mt-1.5">
+                    <span class="text-slate-400">종합 위협 지수</span>
+                    <span id="ai-score-text" class="font-bold text-white">0 / 100</span>
+                </div>
+            </div>
+            <div id="active-spikes-summary" class="w-full text-[11px] bg-slate-900/90 rounded py-1 px-2 border border-slate-700 text-slate-400">
+                비선형 스파이크: 없음
+            </div>
+        </div>
+
+        <!-- 1. 군사 도메인 (3지표) -->
+        <div class="panel flex flex-col justify-between">
+            <div class="today-badge">TODAY</div>
+            <div class="flex items-center justify-between border-b border-slate-700/80 pb-1.5 mb-2">
+                <h2 class="text-blue-400 text-xs font-bold uppercase"><i class="fas fa-crosshairs mr-1"></i>1. 군사 (Military)</h2>
+                <span id="kpi-mil-spike-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">평시</span>
+            </div>
+            <div class="space-y-1.5 text-xs">
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형1] ADIZ 총 출격</span>
+                    <span class="font-bold text-slate-100"><span id="kpi-mil-total">-</span> <span class="text-[10px] text-slate-400">/ 80기</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형2] 해군 함정 전개</span>
+                    <span class="font-bold text-blue-300"><span id="kpi-mil-vessels">-</span> <span class="text-[10px] text-slate-400">/ 30척</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-900 px-2 py-1 rounded border border-blue-900/60">
+                    <span class="text-rose-300 font-semibold">[비선형] 중간선·특수기</span>
+                    <span class="font-bold text-rose-400"><span id="kpi-mil-median">-</span>기 (<span id="kpi-mil-spec">-</span>%)</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 2. 금융 도메인 (3지표) -->
+        <div class="panel flex flex-col justify-between">
+            <div class="today-badge">TODAY</div>
+            <div class="flex items-center justify-between border-b border-slate-700/80 pb-1.5 mb-2">
+                <h2 class="text-cyan-400 text-xs font-bold uppercase"><i class="fas fa-chart-line mr-1"></i>2. 금융 (FININT)</h2>
+                <span id="kpi-fin-spike-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">평시</span>
+            </div>
+            <div class="space-y-1.5 text-xs">
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형1] 외인 주식 순매도</span>
+                    <span class="font-bold text-slate-100"><span id="kpi-fin-sell">-</span> <span class="text-[10px] text-slate-400">/ 1,200억</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형2] 5년물 국채 CDS</span>
+                    <span class="font-bold text-cyan-300"><span id="kpi-fin-cds">-</span> <span class="text-[10px] text-slate-400">/ 120 bps</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-900 px-2 py-1 rounded border border-cyan-900/60">
+                    <span class="text-rose-300 font-semibold">[비선형] USDT 프리미엄</span>
+                    <span class="font-bold text-rose-400">+<span id="kpi-fin-usdt">-</span>%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3. 항공 도메인 (3지표) -->
+        <div class="panel flex flex-col justify-between">
+            <div class="today-badge">TODAY</div>
+            <div class="flex items-center justify-between border-b border-slate-700/80 pb-1.5 mb-2">
+                <h2 class="text-purple-400 text-xs font-bold uppercase"><i class="fas fa-plane mr-1"></i>3. 항공 (Aviation)</h2>
+                <span id="kpi-avi-spike-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">평시</span>
+            </div>
+            <div class="space-y-1.5 text-xs">
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형1] NOTAM 공역우회</span>
+                    <span class="font-bold text-slate-100"><span id="kpi-avi-reroute">-</span> <span class="text-[10px] text-slate-400">/ 300편</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형2] 반도체 화물증감</span>
+                    <span class="font-bold text-purple-300"><span id="kpi-avi-cargo">-</span> <span class="text-[10px] text-slate-400">/ ±50%</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-900 px-2 py-1 rounded border border-purple-900/60">
+                    <span class="text-rose-300 font-semibold">[비선형] VVIP 전용기 이탈</span>
+                    <span class="font-bold text-rose-400"><span id="kpi-avi-vvip">-</span>대</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 4. 해운 도메인 (3지표) -->
+        <div class="panel flex flex-col justify-between">
+            <div class="today-badge">TODAY</div>
+            <div class="flex items-center justify-between border-b border-slate-700/80 pb-1.5 mb-2">
+                <h2 class="text-pink-400 text-xs font-bold uppercase"><i class="fas fa-ship mr-1"></i>4. 해운 (Maritime)</h2>
+                <span id="kpi-mar-spike-badge" class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">평시</span>
+            </div>
+            <div class="space-y-1.5 text-xs">
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형1] 해협 우회 상선</span>
+                    <span class="font-bold text-slate-100"><span id="kpi-mar-bypass">-</span> <span class="text-[10px] text-slate-400">/ 50척</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-800/60 px-2 py-1 rounded">
+                    <span class="text-slate-400">[선형2] 7대항만 일일입항</span>
+                    <span class="font-bold text-pink-300"><span id="kpi-mar-calls">-</span> <span class="text-[10px] text-slate-400">/ 100척</span></span>
+                </div>
+                <div class="flex justify-between items-center bg-slate-900 px-2 py-1 rounded border border-pink-900/60">
+                    <span class="text-rose-300 font-semibold">[비선형] 민간 Ro-Ro 징발</span>
+                    <span class="font-bold text-rose-400"><span id="kpi-mar-roro">-</span>척</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 메인 영역: 좌측(차트 / GIS) + 우측(실시간 위기 징후 속보) -->
+    <div class="grid grid-cols-1 xl:grid-cols-4 gap-6">
+        <div class="xl:col-span-3 flex flex-col gap-4">
+            
+            <!-- 뷰 전환 및 기간/레이어 컨트롤 바 -->
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center bg-slate-800 p-3 rounded-lg border border-slate-700 gap-3">
+                <div class="flex items-center gap-2">
+                    <button onclick="switchMainView('charts')" id="tab-charts" class="px-3 py-1.5 text-xs font-bold rounded bg-slate-200 text-slate-900 transition flex items-center gap-1.5 shadow">
+                        <i class="fas fa-chart-area"></i> 12대 지표 시계열 추세 (Charts)
+                    </button>
+                    <button onclick="switchMainView('gis')" id="tab-gis" class="px-3 py-1.5 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition flex items-center gap-1.5 border border-slate-700">
+                        <i class="fas fa-map-marked-alt"></i> 양안 전술 상황도 (GIS Map)
+                    </button>
+                </div>
+
+                <!-- 차트 컨트롤 -->
+                <div id="chart-controls" class="flex flex-wrap items-center gap-3 w-full md:w-auto justify-between md:justify-end">
+                    <div class="text-[11px] text-slate-300 flex items-center gap-3">
+                        <span class="flex items-center"><span class="inline-block w-2.5 h-2.5 bg-blue-500 mr-1 rounded-sm"></span>선형1(막대)</span>
+                        <span class="flex items-center"><span class="inline-block w-3 h-0.5 bg-cyan-300 mr-1"></span>선형2(실선)</span>
+                        <span class="flex items-center text-rose-400 font-bold"><span class="inline-block w-3 h-0.5 border-b-2 border-rose-500 border-dashed mr-1"></span>비선형(스파이크)</span>
+                    </div>
+                    <div class="flex gap-1">
+                        <button onclick="changePeriod('1w')" id="btn-1w" class="px-2.5 py-1 text-xs font-bold rounded bg-slate-300 text-slate-900 transition-colors shadow">1주</button>
+                        <button onclick="changePeriod('1m')" id="btn-1m" class="px-2.5 py-1 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition-colors border border-slate-700">1달</button>
+                        <button onclick="changePeriod('3m')" id="btn-3m" class="px-2.5 py-1 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition-colors border border-slate-700">3달</button>
+                        <button onclick="changePeriod('6m')" id="btn-6m" class="px-2.5 py-1 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition-colors border border-slate-700">6달</button>
+                        <button onclick="changePeriod('1y')" id="btn-1y" class="px-2.5 py-1 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition-colors border border-slate-700">1년</button>
+                    </div>
+                </div>
+
+                <!-- GIS 레이어 컨트롤 -->
+                <div id="gis-controls" class="hidden flex-wrap items-center gap-3 text-xs">
+                    <span class="text-slate-400 text-[11px] mr-1">도메인 레이어:</span>
+                    <label class="flex items-center gap-1 cursor-pointer text-blue-400 font-semibold"><input type="checkbox" checked onchange="toggleGisLayer('military', this.checked)" class="accent-blue-500"> 군사</label>
+                    <label class="flex items-center gap-1 cursor-pointer text-cyan-400 font-semibold"><input type="checkbox" checked onchange="toggleGisLayer('finance', this.checked)" class="accent-cyan-500"> 금융</label>
+                    <label class="flex items-center gap-1 cursor-pointer text-purple-400 font-semibold"><input type="checkbox" checked onchange="toggleGisLayer('aviation', this.checked)" class="accent-purple-500"> 항공</label>
+                    <label class="flex items-center gap-1 cursor-pointer text-pink-400 font-semibold"><input type="checkbox" checked onchange="toggleGisLayer('maritime', this.checked)" class="accent-pink-500"> 해운</label>
+                </div>
+            </div>
+
+            <!-- 시계열 차트 뷰 (AI 종합 + 4대 도메인 3지표 통합 차트) -->
+            <div id="view-charts" class="flex flex-col gap-4">
+                <div class="panel">
+                    <h2 class="text-sm font-bold text-slate-200 mb-2 flex justify-between items-center">
+                        <span class="flex items-center"><i class="fas fa-robot text-emerald-400 mr-2"></i>AI 종합 위협 지수 추이 (선형 60점 + 비선형 가산 40점 + 게이트키퍼)</span>
+                        <span class="text-[10px] font-normal text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">0 ~ 100 Scale</span>
+                    </h2>
+                    <div class="h-32 relative"><canvas id="aiChart"></canvas></div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <!-- 군사 차트 -->
+                    <div class="panel">
+                        <h2 class="text-sm font-bold text-slate-200 mb-2 flex justify-between items-center">
+                            <span class="flex items-center"><i class="fas fa-crosshairs text-blue-400 mr-2"></i>군사 3대 지표 추이</span>
+                            <span class="text-[10px] font-normal text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">출격(80) · 함정(30) · 중간선침범(스파이크)</span>
+                        </h2>
+                        <div class="h-52 relative"><canvas id="militaryChart"></canvas></div>
+                    </div>
+                    <!-- 금융 차트 -->
+                    <div class="panel">
+                        <h2 class="text-sm font-bold text-slate-200 mb-2 flex justify-between items-center">
+                            <span class="flex items-center"><i class="fas fa-chart-line text-cyan-400 mr-2"></i>금융 3대 지표 추이</span>
+                            <span class="text-[10px] font-normal text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">순매도(1,200억) · CDS(120bps) · USDT할증(%)</span>
+                        </h2>
+                        <div class="h-52 relative"><canvas id="financeChart"></canvas></div>
+                    </div>
+                    <!-- 항공 차트 -->
+                    <div class="panel">
+                        <h2 class="text-sm font-bold text-slate-200 mb-2 flex justify-between items-center">
+                            <span class="flex items-center"><i class="fas fa-plane text-purple-400 mr-2"></i>항공 3대 지표 추이</span>
+                            <span class="text-[10px] font-normal text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">공역우회(300편) · 반도체화물(±50%) · VVIP이탈</span>
+                        </h2>
+                        <div class="h-52 relative"><canvas id="aviationChart"></canvas></div>
+                    </div>
+                    <!-- 해운 차트 -->
+                    <div class="panel">
+                        <h2 class="text-sm font-bold text-slate-200 mb-2 flex justify-between items-center">
+                            <span class="flex items-center"><i class="fas fa-ship text-pink-400 mr-2"></i>해운 3대 지표 추이</span>
+                            <span class="text-[10px] font-normal text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">우회상선(50척) · 7대항만입항(100척) · Ro-Ro징발</span>
+                        </h2>
+                        <div class="h-52 relative"><canvas id="maritimeChart"></canvas></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- GIS 전술 상황도 뷰 -->
+            <div id="view-gis" class="hidden panel flex-col gap-3">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-2">
+                    <h2 class="text-sm font-bold text-slate-200 flex items-center">
+                        <i class="fas fa-satellite text-slate-400 mr-2"></i>양안(대만 본섬 · 중국 대륙) 4대 도메인 공간 전술 상황도
+                    </h2>
+                    <span class="text-[11px] text-slate-400">거점 마커 클릭 시 대만 및 중국 본토(푸젠·광동·저장·상하이) 상세 지표 팝업</span>
+                </div>
+                <div id="tacticalMap" class="w-full h-[560px] border border-slate-700 rounded-lg z-10"></div>
+                <div class="flex flex-col md:flex-row justify-between gap-2 text-[11px] text-slate-300 bg-slate-900/90 p-2.5 rounded border border-slate-800">
+                    <div class="flex flex-wrap gap-3">
+                        <span><strong class="text-slate-400">도메인 색상:</strong></span>
+                        <span><span class="inline-block w-2.5 h-2.5 bg-blue-500 rounded-sm mr-1"></span>군사(전구·함대·ADIZ)</span>
+                        <span><span class="inline-block w-2.5 h-2.5 bg-cyan-400 rounded-sm mr-1"></span>금융(TWSE·상하이·선전)</span>
+                        <span><span class="inline-block w-2.5 h-2.5 bg-purple-400 rounded-sm mr-1"></span>항공(대만4대·대륙3대공항)</span>
+                        <span><span class="inline-block w-2.5 h-2.5 bg-pink-500 rounded-sm mr-1"></span>해운(대만7대항·Ro-Ro거점)</span>
+                    </div>
+                    <div class="flex flex-wrap gap-3 border-t md:border-t-0 border-slate-800 pt-1 md:pt-0">
+                        <span><strong class="text-slate-400">단계별 심볼:</strong></span>
+                        <span class="text-emerald-400">● 평시(원)</span>
+                        <span class="text-yellow-400">▲ 관찰(삼각형)</span>
+                        <span class="text-orange-400">❗ 경계(느낌표)</span>
+                        <span class="text-red-500 font-bold">★ 심각(별·점멸)</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 우측 위기 징후 속보 패널 -->
+        <div class="panel flex flex-col h-full xl:col-span-1 border-l-2 border-slate-600">
+            <div class="flex justify-between items-center mb-3">
+                <h2 class="text-base font-bold text-slate-200 flex items-center"><i class="fas fa-bell text-amber-400 mr-2"></i>도메인별 징후 속보</h2>
+                <span class="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 border border-slate-700">12지표 연동</span>
+            </div>
+            <div class="flex gap-2 mb-3 items-center bg-slate-800 p-2 rounded border border-slate-700">
+                <input type="date" id="archive-date" class="bg-slate-900 text-xs text-slate-300 px-2 py-1 rounded border border-slate-600 w-full">
+                <button onclick="fetchArchiveFeed()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs px-3 py-1 rounded font-bold transition whitespace-nowrap border border-slate-600">조회</button>
+            </div>
+            <div id="alert-feed" class="flex flex-col gap-2.5 overflow-y-auto text-xs pr-1 max-h-[720px]">로딩 중...</div>
+        </div>
+    </div>
+
+    <!-- 가이드 모달 -->
+    <div id="infoModal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex justify-center items-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-xl max-w-4xl w-full max-h-[85vh] overflow-y-auto p-6 shadow-2xl">
+            <div class="flex justify-between items-center mb-4 border-b border-slate-700 pb-3">
+                <h2 class="text-lg font-bold text-white"><i class="fas fa-book-open text-slate-400 mr-2"></i>T-EWD 12대 지표 명세 및 AI 위협 점수 산정 기준</h2>
+                <button onclick="document.getElementById('infoModal').classList.add('hidden')" class="text-slate-400 hover:text-white text-2xl font-bold">&times;</button>
+            </div>
+            <div class="text-xs text-slate-300 space-y-4">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div class="bg-slate-800 p-3 rounded border border-slate-700">
+                        <strong class="text-blue-400 text-sm">1. 군사 (가중치 30% / 선형 최대 18점)</strong>
+                        <ul class="list-disc pl-4 mt-1.5 space-y-1">
+                            <li><b>선형1:</b> ADIZ 총 출격 기수 (상한 80기)</li>
+                            <li><b>선형2:</b> 주변 해역 중국 해군 함정 척수 (상한 30척)</li>
+                            <li><b>비선형:</b> 중간선 침범 15기 이상 또는 특수기 비중 25% 이상 시 스파이크 가산(+12~22점)</li>
+                        </ul>
+                    </div>
+                    <div class="bg-slate-800 p-3 rounded border border-slate-700">
+                        <strong class="text-cyan-400 text-sm">2. 금융 (가중치 20% / 선형 최대 12점)</strong>
+                        <ul class="list-disc pl-4 mt-1.5 space-y-1">
+                            <li><b>선형1:</b> TWSE 외국인 주식 순매도 (상한 1,200억 TWD)</li>
+                            <li><b>선형2:</b> 대만 5년물 국채 CDS 스프레드 (상한 120 bps)</li>
+                            <li><b>비선형:</b> 로컬 거래소 USDT 프리미엄 +1.5% 이상 시 스파이크 가산(+10~20점)</li>
+                        </ul>
+                    </div>
+                    <div class="bg-slate-800 p-3 rounded border border-slate-700">
+                        <strong class="text-purple-400 text-sm">3. 항공 (가중치 25% / 선형 최대 15점)</strong>
+                        <ul class="list-disc pl-4 mt-1.5 space-y-1">
+                            <li><b>선형1:</b> NOTAM 공역 통제 연계 국제선 우회 편수 (기상 결항 제외, 상한 300편)</li>
+                            <li><b>선형2:</b> 반도체 항공 화물 물동량 증감률 (-50% ~ +50% 양방향)</li>
+                            <li><b>비선형:</b> 쑹산·타오위안 공항 VVIP 비즈니스젯 이탈 3대 이상 시 스파이크 가산(+10~20점)</li>
+                        </ul>
+                    </div>
+                    <div class="bg-slate-800 p-3 rounded border border-slate-700">
+                        <strong class="text-pink-400 text-sm">4. 해운 (가중치 25% / 선형 최대 15점)</strong>
+                        <ul class="list-disc pl-4 mt-1.5 space-y-1">
+                            <li><b>선형1:</b> 대만해협 정면 통항 포기 및 우회 상선 척수 (상한 50척)</li>
+                            <li><b>선형2:</b> 대만 7대 주요 항만 일일 컨테이너선 입항 척수 (상한 100척, 평시 65척 대비 감소분 반영)</li>
+                            <li><b>비선형:</b> 푸젠·광동성 민간 Ro-Ro 카페리 징발 5척 이상 시 스파이크 가산(+15~27점)</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-6 text-center border-t border-slate-700 pt-3">
+                <button onclick="document.getElementById('infoModal').classList.add('hidden')" class="bg-slate-700 hover:bg-slate-600 text-white px-6 py-1.5 rounded font-bold transition">닫기</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentPeriod = '1w';
+        let latestLiveData = null;
+        let mapInstance = null;
+        let gisLayers = { military: null, finance: null, aviation: null, maritime: null };
+
+        // 3중 지표(선형1 막대 + 선형2 실선 + 비선형3 계단형 스파이크) 차트 옵션 생성기
+        function get3IndicatorOpt(leftLabel, leftColor, rightLabel, rightColor, leftMax, rightMax, spikeMax, isRightSymmetric = false) {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { color: '#cbd5e1', boxWidth: 11, font: { size: 10 } } },
+                    tooltip: { mode: 'index', intersect: false }
+                },
+                scales: {
+                    x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#1e293b', drawTicks: false } },
+                    y: {
+                        position: 'left',
+                        min: 0,
+                        max: leftMax,
+                        title: { display: true, text: leftLabel, color: leftColor, font: { size: 10, weight: 'bold' } },
+                        ticks: { color: leftColor, font: { size: 10, weight: 'bold' } },
+                        grid: { color: '#334155', drawTicks: false }
+                    },
+                    y1: {
+                        position: 'right',
+                        min: isRightSymmetric ? -50 : 0,
+                        max: rightMax,
+                        title: { display: true, text: rightLabel, color: rightColor, font: { size: 10, weight: 'bold' } },
+                        ticks: { color: rightColor, font: { size: 10, weight: 'bold' } },
+                        grid: { drawOnChartArea: false, drawTicks: false }
+                    },
+                    y2: {
+                        display: false, // 비선형 스파이크 전용 오버레이 스케일
+                        position: 'right',
+                        min: 0,
+                        max: spikeMax
+                    }
+                },
+                interaction: { mode: 'index', intersect: false }
+            };
+        }
+
+        // 차트 초기화 (각 도메인별 3개 데이터셋 탑재)
+        const charts = {
+            ai: new Chart(document.getElementById('aiChart'), {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'AI 종합 위협 지수', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.15)', fill: true, tension: 0.15 }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: '#1e293b' } },
+                        y: { min: 0, max: 100, ticks: { color: '#10b981', font: { weight: 'bold' } }, grid: { color: '#334155' } }
+                    }
+                }
+            }),
+            military: new Chart(document.getElementById('militaryChart'), {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { type: 'bar', label: '[선형1] ADIZ 출격(기)', data: [], backgroundColor: 'rgba(30, 64, 175, 0.75)', yAxisID: 'y', order: 3 },
+                        { type: 'line', label: '[선형2] 해군 함정(척)', data: [], borderColor: '#93c5fd', backgroundColor: '#93c5fd', tension: 0.2, yAxisID: 'y1', order: 2 },
+                        { type: 'line', label: '[비선형] 중간선 침범(기)', data: [], borderColor: '#f43f5e', backgroundColor: '#f43f5e', borderDash: [4, 3], borderWidth: 2, pointStyle: 'rectRot', pointRadius: 4, stepped: true, yAxisID: 'y2', order: 1 }
+                    ]
+                },
+                options: get3IndicatorOpt('ADIZ 출격 (0~80기)', '#60a5fa', '해군 함정 (0~30척)', '#93c5fd', 80, 30, 40)
+            }),
+            finance: new Chart(document.getElementById('financeChart'), {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { type: 'bar', label: '[선형1] 외인 순매도(억 TWD)', data: [], backgroundColor: 'rgba(21, 94, 117, 0.75)', yAxisID: 'y', order: 3 },
+                        { type: 'line', label: '[선형2] 5년물 CDS(bps)', data: [], borderColor: '#67e8f9', backgroundColor: '#67e8f9', tension: 0.2, yAxisID: 'y1', order: 2 },
+                        { type: 'line', label: '[비선형] USDT 할증(%)', data: [], borderColor: '#f43f5e', backgroundColor: '#f43f5e', borderDash: [4, 3], borderWidth: 2, pointStyle: 'rectRot', pointRadius: 4, stepped: true, yAxisID: 'y2', order: 1 }
+                    ]
+                },
+                options: get3IndicatorOpt('외인 순매도 (0~1,200억)', '#22d3ee', '5년물 CDS (0~120 bps)', '#67e8f9', 1200, 120, 5.0)
+            }),
+            aviation: new Chart(document.getElementById('aviationChart'), {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { type: 'bar', label: '[선형1] NOTAM 공역우회(편)', data: [], backgroundColor: 'rgba(88, 28, 135, 0.75)', yAxisID: 'y', order: 3 },
+                        { type: 'line', label: '[선형2] 반도체 화물증감(%)', data: [], borderColor: '#d8b4fe', backgroundColor: '#d8b4fe', tension: 0.2, yAxisID: 'y1', order: 2 },
+                        { type: 'line', label: '[비선형] VVIP 이탈(대)', data: [], borderColor: '#f43f5e', backgroundColor: '#f43f5e', borderDash: [4, 3], borderWidth: 2, pointStyle: 'rectRot', pointRadius: 4, stepped: true, yAxisID: 'y2', order: 1 }
+                    ]
+                },
+                options: get3IndicatorOpt('NOTAM 우회 (0~300편)', '#c084fc', '반도체 화물 (-50~+50%)', '#d8b4fe', 300, 50, 15, true)
+            }),
+            maritime: new Chart(document.getElementById('maritimeChart'), {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [
+                        { type: 'bar', label: '[선형1] 해협 우회 상선(척)', data: [], backgroundColor: 'rgba(157, 23, 77, 0.75)', yAxisID: 'y', order: 3 },
+                        { type: 'line', label: '[선형2] 7대항만 입항(척)', data: [], borderColor: '#f9a8d4', backgroundColor: '#f9a8d4', tension: 0.2, yAxisID: 'y1', order: 2 },
+                        { type: 'line', label: '[비선형] Ro-Ro 징발(척)', data: [], borderColor: '#f43f5e', backgroundColor: '#f43f5e', borderDash: [4, 3], borderWidth: 2, pointStyle: 'rectRot', pointRadius: 4, stepped: true, yAxisID: 'y2', order: 1 }
+                    ]
+                },
+                options: get3IndicatorOpt('우회 상선 (0~50척)', '#f472b6', '7대항만 입항 (0~100척)', '#f9a8d4', 50, 100, 20)
+            })
+        };
+
+        // 뷰 전환
+        function switchMainView(viewName) {
+            const chartView = document.getElementById('view-charts');
+            const gisView = document.getElementById('view-gis');
+            const chartCtrl = document.getElementById('chart-controls');
+            const gisCtrl = document.getElementById('gis-controls');
+            const tabCharts = document.getElementById('tab-charts');
+            const tabGis = document.getElementById('tab-gis');
+
+            if (viewName === 'gis') {
+                chartView.classList.add('hidden'); chartCtrl.classList.add('hidden');
+                gisView.classList.remove('hidden'); gisView.classList.add('flex');
+                gisCtrl.classList.remove('hidden'); gisCtrl.classList.add('flex');
+                tabGis.className = "px-3 py-1.5 text-xs font-bold rounded bg-slate-200 text-slate-900 transition flex items-center gap-1.5 shadow";
+                tabCharts.className = "px-3 py-1.5 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition flex items-center gap-1.5 border border-slate-700";
+                if (!mapInstance) initTacticalMap();
+                else setTimeout(() => mapInstance.invalidateSize(), 100);
+                if (latestLiveData) updateGisLayers(latestLiveData);
+            } else {
+                gisView.classList.add('hidden'); gisView.classList.remove('flex');
+                gisCtrl.classList.add('hidden'); gisCtrl.classList.remove('flex');
+                chartView.classList.remove('hidden'); chartCtrl.classList.remove('hidden');
+                tabCharts.className = "px-3 py-1.5 text-xs font-bold rounded bg-slate-200 text-slate-900 transition flex items-center gap-1.5 shadow";
+                tabGis.className = "px-3 py-1.5 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition flex items-center gap-1.5 border border-slate-700";
+            }
+        }
+
+        // GIS 초기화 (북위 11~38도, 동경 110~146도)
+        function initTacticalMap() {
+            const strictBounds = L.latLngBounds([[11.0, 110.0], [38.0, 146.0]]);
+            mapInstance = L.map('tacticalMap', { maxZoom: 10, zoomSnap: 0.25, zoomDelta: 0.5, bounceAtZoomLimits: false });
+            mapInstance.fitBounds(strictBounds);
+            mapInstance.setMinZoom(mapInstance.getZoom());
+            mapInstance.setMaxBounds(mapInstance.getBounds());
+
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', { maxZoom: 12, bounds: strictBounds }).addTo(mapInstance);
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', { maxZoom: 12, bounds: strictBounds }).addTo(mapInstance);
+
+            gisLayers.military = L.layerGroup().addTo(mapInstance);
+            gisLayers.finance = L.layerGroup().addTo(mapInstance);
+            gisLayers.aviation = L.layerGroup().addTo(mapInstance);
+            gisLayers.maritime = L.layerGroup().addTo(mapInstance);
+
+            if (latestLiveData) updateGisLayers(latestLiveData);
+        }
+
+        function toggleGisLayer(domain, isChecked) {
+            if (!mapInstance || !gisLayers[domain]) return;
+            if (isChecked) mapInstance.addLayer(gisLayers[domain]);
+            else mapInstance.removeLayer(gisLayers[domain]);
+        }
+
+        // 도메인 위협 레벨 판정 (0:평시, 1:관찰, 2:경계, 3:심각)
+        function getDomainLevel(linearRatio, isSpike, spikeSevere = false) {
+            if (isSpike && (spikeSevere || linearRatio >= 0.55)) return 3;
+            if (isSpike || linearRatio >= 0.65) return 2;
+            if (linearRatio >= 0.30) return 1;
+            return 0;
+        }
+
+        // 4단계 전술 심볼(● 원, ▲ 삼각형, ❗ 느낌표, ★ 별) SVG 생성기
+        function createTacticalIcon(level, fillColor, strokeColor = '#f8fafc', size = 22) {
+            let svgContent = '';
+            const extraClass = level === 3 ? 'critical-pulse' : '';
+            if (level === 0) {
+                svgContent = `<svg width="${size}" height="${size}" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2"/></svg>`;
+            } else if (level === 1) {
+                svgContent = `<svg width="${size}" height="${size}" viewBox="0 0 24 24"><polygon points="12,3 22,20 2,20" fill="${fillColor}" stroke="#fde047" stroke-width="2" stroke-linejoin="round"/></svg>`;
+            } else if (level === 2) {
+                svgContent = `<svg width="${size+2}" height="${size+2}" viewBox="0 0 24 24"><polygon points="12,1 23,12 12,23 1,12" fill="${fillColor}" stroke="#fb923c" stroke-width="2.2"/><path d="M12 6.5V13.5" stroke="#ffffff" stroke-width="2.8" stroke-linecap="round"/><circle cx="12" cy="17.5" r="1.6" fill="#ffffff"/></svg>`;
+            } else {
+                svgContent = `<svg width="${size+6}" height="${size+6}" viewBox="0 0 24 24"><polygon points="12,1.5 15.1,8.0 22.3,8.9 17.0,13.9 18.4,21.0 12,17.5 5.6,21.0 7.0,13.9 1.7,8.9 8.9,8.0" fill="${fillColor}" stroke="#ef4444" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.5" fill="#ffffff"/></svg>`;
+            }
+            return L.divIcon({
+                className: `tactical-marker ${extraClass}`,
+                html: svgContent,
+                iconSize: [size, size],
+                iconAnchor: [size / 2, size / 2],
+                popupAnchor: [0, -(size / 2)]
+            });
+        }
+
+        // 대만 본섬 + 중국 대륙(푸젠·광동·저장·장쑤·상하이) 양안 전술 노드 렌더링
+        function updateGisLayers(data) {
+            if (!mapInstance) return;
+            Object.values(gisLayers).forEach(layer => layer.clearLayers());
+
+            const levelBadges = [
+                '<span class="text-emerald-400 font-bold">● 평시 (Normal)</span>',
+                '<span class="text-yellow-400 font-bold">▲ 관찰 (Watch)</span>',
+                '<span class="text-orange-400 font-bold">❗ 경계 (Alert)</span>',
+                '<span class="text-red-500 font-bold">★ 심각 (Critical)</span>'
+            ];
+
+            const milTot = data.military.total.slice(-1)[0];
+            const milMed = data.military.median.slice(-1)[0];
+            const milVes = data.military.vessels.slice(-1)[0];
+            const milSpec = data.military.specialRatio.slice(-1)[0];
+
+            const finSell = data.finance.netSell.slice(-1)[0];
+            const finCds = data.finance.cds.slice(-1)[0];
+            const finUsdt = data.finance.usdtPrem.slice(-1)[0];
+
+            const aviReroute = data.aviation.rerouted.slice(-1)[0];
+            const aviCargo = data.aviation.cargoDrop.slice(-1)[0];
+            const aviVvip = data.aviation.vvip.slice(-1)[0];
+
+            const marBypass = data.maritime.bypassed.slice(-1)[0];
+            const marCalls = data.maritime.portCalls.slice(-1)[0];
+            const marRoro = data.maritime.roro.slice(-1)[0];
+
+            const milLevel = getDomainLevel(Math.max(milTot / 80, milVes / 30), data.military.spike, milMed >= 20);
+            const finLevel = getDomainLevel(Math.max(finSell / 1200, (finCds - 25) / 95), data.finance.spike, finUsdt >= 2.5);
+            const aviLevel = getDomainLevel(Math.max(aviReroute / 300, Math.abs(aviCargo) / 50), data.aviation.spike, aviVvip >= 5);
+            const marLevel = getDomainLevel(Math.max(marBypass / 50, (65 - marCalls) / 45), data.maritime.spike, marRoro >= 8);
+
+            // 1. 군사 레이어 (ADIZ, 중간선, 해상 차단점 + 중국 대륙 전구/함대/전술기지)
+            L.polygon([[27.5, 117.5], [27.5, 122.5], [21.5, 122.5], [21.5, 117.5]], {
+                color: '#38bdf8', weight: 1.5, dashArray: '5, 5', fillColor: '#0284c7', fillOpacity: 0.05
+            }).bindPopup(`<b>[군사] Taiwan ADIZ</b><br>단계: ${levelBadges[milLevel]}<br>출격: ${milTot}기 / 특수기 비중: ${milSpec}%`).addTo(gisLayers.military);
+
+            L.polyline([[26.5, 121.1], [24.8, 119.6], [23.1, 118.4]], {
+                color: data.military.spike ? '#ef4444' : '#fda4af', weight: data.military.spike ? 3.5 : 2, dashArray: data.military.spike ? null : '4, 4'
+            }).bindPopup(`<b>[군사 비선형] 대만해협 중간선</b><br>침범: <b>${milMed}기</b> / 특수기: <b>${milSpec}%</b>`).addTo(gisLayers.military);
+
+            const milNodes = [
+                { name: "미야코 해협 (동부 해상 차단점)", lat: 24.80, lng: 123.80, side: "해협" },
+                { name: "바시 해협 (남부 남중국해 연결로)", lat: 21.00, lng: 120.80, side: "해협" },
+                { name: "난징 (PLA 동부전구 사령부)", lat: 32.06, lng: 118.79, side: "중국대륙" },
+                { name: "광저우 (PLA 남부전구 사령부)", lat: 23.13, lng: 113.26, side: "중국대륙(광동)" },
+                { name: "닝보·저우산 (동해함대 사령부)", lat: 29.86, lng: 121.54, side: "중국대륙(저장)" },
+                { name: "잔장 (남해함대 사령부)", lat: 21.27, lng: 110.35, side: "중국대륙(광동)" },
+                { name: "푸조우·룽톈 전술공군기지", lat: 25.57, lng: 119.46, side: "중국대륙(푸젠)" }
+            ];
+            milNodes.forEach(n => {
+                L.marker([n.lat, n.lng], { icon: createTacticalIcon(milLevel, '#2563eb', '#93c5fd', 22) })
+                 .bindPopup(`<b>[군사-${n.side}] ${n.name}</b><br>단계: ${levelBadges[milLevel]}<br>ADIZ 출격: ${milTot}기 / 함정: ${milVes}척<br>중간선 침범: ${milMed}기`)
+                 .addTo(gisLayers.military);
+            });
+
+            // 2. 금융 레이어 (타이베이 TWSE + 상하이 SSE + 선전 SZSE)
+            const finNodes = [
+                { name: "타이베이 증권거래소 (TWSE)", lat: 25.033, lng: 121.565, side: "대만" },
+                { name: "상하이 증권거래소 (SSE · 역외유동성)", lat: 31.230, lng: 121.473, side: "중국대륙" },
+                { name: "선전 증권거래소 (SZSE · 광동 하이테크/크립토)", lat: 22.543, lng: 114.057, side: "중국대륙(광동)" }
+            ];
+            finNodes.forEach(n => {
+                L.marker([n.lat, n.lng], { icon: createTacticalIcon(finLevel, '#0891b2', '#67e8f9', 24) })
+                 .bindPopup(`<b>[금융-${n.side}] ${n.name}</b><br>단계: ${levelBadges[finLevel]}<br>외인 순매도: <b>${finSell}억 TWD</b><br>5년물 CDS: <b>${finCds} bps</b> / USDT 할증: <b>+${finUsdt}%</b>`)
+                 .addTo(gisLayers.finance);
+            });
+
+            // 3. 항공 레이어 (대만 4대 국제공항 + 중국 대륙 푸젠·광동·상하이 핵심 공항)
+            const aviNodes = [
+                { name: "타오위안 국제공항 (TPE · 반도체 화물허브)", lat: 25.077, lng: 121.232, side: "대만", main: true },
+                { name: "타이베이 쑹산 국제공항 (TSA · VVIP 전용기)", lat: 25.069, lng: 121.552, side: "대만", main: true },
+                { name: "타이중 국제공항 (RMQ · 중부 민군겸용)", lat: 24.264, lng: 120.620, side: "대만", main: false },
+                { name: "가오슝 국제공항 (KHH · 남부 관문)", lat: 22.577, lng: 120.350, side: "대만", main: false },
+                { name: "푸조우 창러 국제공항 (FOC · 대륙 북부관제)", lat: 25.935, lng: 119.663, side: "중국대륙(푸젠)", main: true },
+                { name: "샤먼 가오치 국제공항 (XMN · 대륙 남부관제)", lat: 24.544, lng: 118.127, side: "중국대륙(푸젠)", main: true },
+                { name: "광저우 바이윈 국제공항 (CAN · 광동 항공물류)", lat: 23.392, lng: 113.298, side: "중국대륙(광동)", main: false }
+            ];
+            aviNodes.forEach(ap => {
+                const lv = ap.main ? aviLevel : Math.max(0, aviLevel - 1);
+                L.marker([ap.lat, ap.lng], { icon: createTacticalIcon(lv, '#7e22ce', '#e9d5ff', 21) })
+                 .bindPopup(`<b>[항공-${ap.side}] ${ap.name}</b><br>단계: ${levelBadges[lv]}<br>NOTAM 우회: <b>${aviReroute}편</b> (기상결항 제외)<br>반도체 화물: <b>${aviCargo > 0 ? '+'+aviCargo : aviCargo}%</b> / VVIP 이탈: <b>${aviVvip}대</b>`)
+                 .addTo(gisLayers.aviation);
+            });
+            if (data.aviation.spike) {
+                L.polyline([[25.069, 121.552], [26.212, 127.680]], { color: '#c084fc', weight: 2.5, dashArray: '4, 6' })
+                 .bindPopup(`<b>★ [항공 비선형] VVIP 전용기 긴급 이탈 궤적 (${aviVvip}대)</b>`).addTo(gisLayers.aviation);
+            }
+
+            // 4. 해운 레이어 (대만 7대 화물항 + 중국 대륙 푸젠·광동·저장 핵심 항만)
+            const twSevenPorts = [
+                { name: "가오슝항 (Kaohsiung)", lat: 22.616, lng: 120.266 },
+                { name: "타이중항 (Taichung)", lat: 24.256, lng: 120.513 },
+                { name: "타이베이항 (Taipei)", lat: 25.155, lng: 121.392 },
+                { name: "지룽항 (Keelung)", lat: 25.134, lng: 121.741 },
+                { name: "안핑항 (Anping)", lat: 22.980, lng: 120.158 },
+                { name: "쑤아오항 (Su'ao)", lat: 24.594, lng: 121.867 },
+                { name: "화롄항 (Hualien)", lat: 23.987, lng: 121.623 }
+            ];
+            const portLinearLv = getDomainLevel(Math.max(marBypass / 50, (65 - marCalls) / 45), false, false);
+            twSevenPorts.forEach(p => {
+                L.marker([p.lat, p.lng], { icon: createTacticalIcon(portLinearLv, '#be185d', '#fbcfe8', 19) })
+                 .bindPopup(`<b>[대만 7대 항만] ${p.name}</b><br>단계: ${levelBadges[portLinearLv]}<br>7대항만 일일 총입항: <b>${marCalls}척</b> / 해협우회: <b>${marBypass}척</b>`)
+                 .addTo(gisLayers.maritime);
+            });
+
+            const roroLv = marRoro >= 8 ? 3 : (marRoro >= 5 ? 2 : (marRoro >= 1 ? 1 : 0));
+            const mainlandPorts = [
+                { name: "핑탄·마웨이항 (최단거리 Ro-Ro 도하거점)", lat: 25.503, lng: 119.791, region: "푸젠성" },
+                { name: "샤먼항 (남부 상륙전력·Ro-Ro 집결지)", lat: 24.479, lng: 118.089, region: "푸젠성" },
+                { name: "선전·광저우항 (남방 물류·Ro-Ro 배후기지)", lat: 22.502, lng: 113.882, region: "광동성" },
+                { name: "닝보-저우산항 (북방 봉쇄·세계 1위 물동량)", lat: 29.885, lng: 121.844, region: "저장성" }
+            ];
+            mainlandPorts.forEach(mp => {
+                L.marker([mp.lat, mp.lng], { icon: createTacticalIcon(roroLv, '#e11d48', '#fda4af', 23) })
+                 .bindPopup(`<b>[대륙 해운·징발 - ${mp.region}] ${mp.name}</b><br>징발 경보: ${levelBadges[roroLv]}<br>Ro-Ro 카페리 징발·집결: <b>${marRoro}척</b>`)
+                 .addTo(gisLayers.maritime);
+            });
+        }
+
+        // 기간 버튼 전환
+        function changePeriod(period) {
+            currentPeriod = period;
+            ['1w', '1m', '3m', '6m', '1y'].forEach(p => {
+                const btn = document.getElementById(`btn-${p}`);
+                btn.className = (p === period)
+                    ? "px-2.5 py-1 text-xs font-bold rounded bg-slate-300 text-slate-900 transition-colors shadow"
+                    : "px-2.5 py-1 text-xs font-bold rounded bg-slate-900 text-slate-400 hover:text-white transition-colors border border-slate-700";
+            });
+            fetchDashboardData(period);
+        }
+
+        // 내장 폴백 데이터 생성기 (백엔드 오프라인 시에도 작동)
+        function getFallbackData() {
+            return {
+                lastUpdate: "2026-11-04 15:55 KST (내장 시뮬레이션 연동)",
+                labels: ["D-6", "D-5", "D-4", "D-3", "D-2", "D-1", "TODAY"],
+                ai: { score: [16.4, 21.0, 32.5, 46.8, 58.2, 67.5, 64.0] },
+                military: {
+                    total: [12, 16, 24, 34, 48, 56, 52],
+                    vessels: [4, 5, 7, 10, 14, 18, 16],
+                    median: [2, 3, 8, 14, 18, 22, 19],
+                    specialRatio: [10, 12, 18, 24, 28, 32, 29],
+                    spike: true
+                },
+                finance: {
+                    netSell: [85, 140, 290, 480, 720, 910, 840],
+                    cds: [28.5, 31.0, 39.5, 52.0, 68.5, 84.0, 79.5],
+                    usdtPrem: [0.2, 0.35, 0.8, 1.4, 1.9, 2.7, 2.4],
+                    spike: true
+                },
+                aviation: {
+                    rerouted: [2, 5, 18, 45, 95, 165, 145],
+                    cargoDrop: [2, 5, 19, 34, 28, -26, -32],
+                    vvip: [0, 0, 1, 2, 3, 5, 4],
+                    spike: true
+                },
+                maritime: {
+                    bypassed: [1, 2, 6, 12, 21, 30, 27],
+                    portCalls: [66, 65, 61, 55, 48, 41, 43],
+                    roro: [0, 0, 1, 3, 6, 9, 8],
+                    spike: true
+                },
+                alerts: [
+                    { time: "15:40", domain: "해운", color: "pink", msg: "[IMINT/AIS] 푸젠성 핑탄·샤먼 및 광동성 항만 민간 Ro-Ro 카페리 8척 집결 / 대만 7대 항만 입항 43척으로 감소" },
+                    { time: "14:20", domain: "항공", color: "purple", msg: "[CAA/NOTAM] 기상 결항 제외 순수 공역통제 우회 145편 발생 / 반도체 화물 -32% 급감 및 VVIP 비즈니스젯 4대 이탈" },
+                    { time: "13:10", domain: "금융", color: "cyan", msg: "[FININT] TWSE 외국인 순매도 840억 TWD, 5년물 국채 CDS 79.5 bps 상승 / 로컬 USDT 프리미엄 +2.4% 스파이크" },
+                    { time: "10:05", domain: "군사", color: "blue", msg: "[MND/JMOD] ADIZ 출격 52기·함정 16척 전개 / 해협 중간선 19기 돌파 및 특수기 타격 패키지(29%) 발동" }
+                ]
+            };
+        }
+
+        async function fetchDashboardData(period = '1w') {
+            try {
+                const res = await fetch(`https://t-ewd-backend.onrender.com/api/history?period=${period}`);
+                if (!res.ok) throw new Error("Backend offline");
+                const data = await res.json();
+                renderDashboard(data);
+                fetchArchiveFeed();
+            } catch (err) {
+                const fallback = getFallbackData();
+                renderDashboard(fallback);
+                renderAlerts("TODAY", fallback.alerts);
+            }
+        }
+
+        function setSpikeBadge(elemId, isSpike, spikeText) {
+            const el = document.getElementById(elemId);
+            if (isSpike) {
+                el.className = "text-[10px] px-1.5 py-0.5 rounded bg-rose-950 text-rose-400 border border-rose-700 font-bold blink-red";
+                el.innerHTML = `⚠️ ${spikeText}`;
+            } else {
+                el.className = "text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-emerald-400 border border-slate-700";
+                el.innerText = "● 정상범위";
+            }
+        }
+
+        function renderDashboard(data) {
+            latestLiveData = data;
+            document.getElementById('last-update').innerText = data.lastUpdate;
+
+            const latestScore = data.ai.score.slice(-1)[0];
+            document.getElementById('ai-score-text').innerText = `${latestScore} / 100`;
+            const bar = document.getElementById('ai-score-bar');
+            bar.style.width = `${latestScore}%`;
+
+            const badge = document.getElementById('status-badge');
+            const border = document.getElementById('kpi-border');
+            if (latestScore < 25) {
+                badge.innerText = "● 평시 (Normal)"; badge.className = "mt-2 text-2xl font-extrabold text-emerald-400";
+                border.style.borderColor = "#10b981"; bar.className = "bg-emerald-500 h-2.5 transition-all duration-700";
+            } else if (latestScore < 50) {
+                badge.innerText = "▲ 관찰 (Watch)"; badge.className = "mt-2 text-2xl font-extrabold text-yellow-400";
+                border.style.borderColor = "#eab308"; bar.className = "bg-yellow-400 h-2.5 transition-all duration-700";
+            } else if (latestScore < 75) {
+                badge.innerText = "❗ 경계 (Alert)"; badge.className = "mt-2 text-2xl font-extrabold text-orange-500";
+                border.style.borderColor = "#f97316"; bar.className = "bg-orange-500 h-2.5 transition-all duration-700";
+            } else {
+                badge.innerText = "★ 심각 (Critical)"; badge.className = "mt-2 text-2xl font-extrabold text-red-500 blink-red";
+                border.style.borderColor = "#ef4444"; bar.className = "bg-red-500 h-2.5 transition-all duration-700";
+            }
+
+            // 활성화된 스파이크 요약 표시
+            const activeList = [];
+            if (data.military.spike) activeList.push("군사(타격패키지)");
+            if (data.finance.spike) activeList.push("금융(USDT할증)");
+            if (data.aviation.spike) activeList.push("항공(VVIP이탈)");
+            if (data.maritime.spike) activeList.push("해운(Ro-Ro징발)");
+            const spikeSumEl = document.getElementById('active-spikes-summary');
+            if (activeList.length > 0) {
+                spikeSumEl.className = "w-full text-[11px] bg-rose-950/70 rounded py-1 px-2 border border-rose-800 text-rose-300 font-bold";
+                spikeSumEl.innerText = `⚡ 스파이크 발동(${activeList.length}): ${activeList.join(' · ')}`;
+            } else {
+                spikeSumEl.className = "w-full text-[11px] bg-slate-900/90 rounded py-1 px-2 border border-slate-700 text-slate-400";
+                spikeSumEl.innerText = "비선형 스파이크: 발동 없음";
+            }
+
+            // 1. 군사 3지표 KPI 반영
+            document.getElementById('kpi-mil-total').innerText = data.military.total.slice(-1)[0];
+            document.getElementById('kpi-mil-vessels').innerText = data.military.vessels.slice(-1)[0];
+            document.getElementById('kpi-mil-median').innerText = data.military.median.slice(-1)[0];
+            document.getElementById('kpi-mil-spec').innerText = data.military.specialRatio.slice(-1)[0];
+            setSpikeBadge('kpi-mil-spike-badge', data.military.spike, '타격패키지');
+
+            // 2. 금융 3지표 KPI 반영
+            document.getElementById('kpi-fin-sell').innerText = data.finance.netSell.slice(-1)[0];
+            document.getElementById('kpi-fin-cds').innerText = data.finance.cds.slice(-1)[0];
+            document.getElementById('kpi-fin-usdt').innerText = data.finance.usdtPrem.slice(-1)[0];
+            setSpikeBadge('kpi-fin-spike-badge', data.finance.spike, '자본도피');
+
+            // 3. 항공 3지표 KPI 반영
+            const cargoVal = data.aviation.cargoDrop.slice(-1)[0];
+            document.getElementById('kpi-avi-reroute').innerText = data.aviation.rerouted.slice(-1)[0];
+            document.getElementById('kpi-avi-cargo').innerText = cargoVal > 0 ? `+${cargoVal}%` : `${cargoVal}%`;
+            document.getElementById('kpi-avi-vvip').innerText = data.aviation.vvip.slice(-1)[0];
+            setSpikeBadge('kpi-avi-spike-badge', data.aviation.spike, '엑소더스');
+
+            // 4. 해운 3지표 KPI 반영
+            document.getElementById('kpi-mar-bypass').innerText = data.maritime.bypassed.slice(-1)[0];
+            document.getElementById('kpi-mar-calls').innerText = data.maritime.portCalls.slice(-1)[0];
+            document.getElementById('kpi-mar-roro').innerText = data.maritime.roro.slice(-1)[0];
+            setSpikeBadge('kpi-mar-spike-badge', data.maritime.spike, '징발포착');
+
+            // 차트 3개 데이터셋씩 업데이트
+            charts.ai.data.labels = data.labels;
+            charts.ai.data.datasets[0].data = data.ai.score;
+            charts.ai.update();
+
+            charts.military.data.labels = data.labels;
+            charts.military.data.datasets[0].data = data.military.total;
+            charts.military.data.datasets[1].data = data.military.vessels;
+            charts.military.data.datasets[2].data = data.military.median;
+            charts.military.update();
+
+            charts.finance.data.labels = data.labels;
+            charts.finance.data.datasets[0].data = data.finance.netSell;
+            charts.finance.data.datasets[1].data = data.finance.cds;
+            charts.finance.data.datasets[2].data = data.finance.usdtPrem;
+            charts.finance.update();
+
+            charts.aviation.data.labels = data.labels;
+            charts.aviation.data.datasets[0].data = data.aviation.rerouted;
+            charts.aviation.data.datasets[1].data = data.aviation.cargoDrop;
+            charts.aviation.data.datasets[2].data = data.aviation.vvip;
+            charts.aviation.update();
+
+            charts.maritime.data.labels = data.labels;
+            charts.maritime.data.datasets[0].data = data.maritime.bypassed;
+            charts.maritime.data.datasets[1].data = data.maritime.portCalls;
+            charts.maritime.data.datasets[2].data = data.maritime.roro;
+            charts.maritime.update();
+
+            if (mapInstance) updateGisLayers(data);
+        }
+
+        function renderAlerts(dateStr, alerts) {
+            const feedContainer = document.getElementById('alert-feed');
+            feedContainer.innerHTML = alerts.map(a => `
+                <div class="bg-slate-800/90 p-3 rounded border border-slate-700 hover:border-slate-500 transition">
+                    <div class="flex justify-between items-center">
+                        <span class="text-[10px] text-${a.color}-400 font-bold px-1.5 py-0.5 bg-slate-900 rounded border border-slate-700">${a.domain}</span>
+                        <span class="text-[10px] text-slate-400">${dateStr} ${a.time}</span>
+                    </div>
+                    <p class="text-xs text-slate-200 mt-1.5 leading-relaxed">${a.msg}</p>
+                </div>
+            `).join('');
+        }
+
+        async function fetchArchiveFeed() {
+            const dateInput = document.getElementById('archive-date').value;
+            const url = dateInput ? `https://t-ewd-backend.onrender.com/api/alerts?date=${dateInput}` : `https://t-ewd-backend.onrender.com/api/alerts`;
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error("Offline");
+                const data = await res.json();
+                renderAlerts(data.date, data.alerts);
+            } catch (e) {
+                const fb = getFallbackData();
+                renderAlerts(dateInput || "TODAY", fb.alerts);
+            }
+        }
+
+        window.onload = () => { fetchDashboardData('1w'); };
+    </script>
+</body>
+</html>
